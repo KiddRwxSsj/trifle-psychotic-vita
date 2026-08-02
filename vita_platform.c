@@ -179,3 +179,125 @@ static void vita_resolve_path(char* out, size_t out_size, const char* path)
         snprintf(out, out_size, "app0:/%s", path);
     }
 }
+
+void load_image(SDL_Renderer* renderer, SDL_Texture** place_to_load, const char* file_path, b32* success)
+{
+    char full_path[512];
+    vita_resolve_path(full_path, sizeof(full_path), file_path);
+
+    SDL_Surface* loaded_surface = IMG_Load(full_path);
+    if (loaded_surface)
+    {
+        /* vita's IMG_Load/png codec can hand back a surface with no alpha
+           channel (e.g. 24bpp RGB) even when the source PNG has one, so
+           SDL_SetTextureBlendMode(BLEND) below has nothing to blend against -
+           every texel reads back fully opaque and glyphs/sprites keep their
+           solid background box. Force a real RGBA pixel format first. */
+        SDL_Surface* rgba_surface = SDL_ConvertSurfaceFormat(loaded_surface, SDL_PIXELFORMAT_RGBA32, 0);
+        if (rgba_surface)
+        {
+            SDL_FreeSurface(loaded_surface);
+            loaded_surface = rgba_surface;
+        }
+
+        *place_to_load = SDL_CreateTextureFromSurface(renderer, loaded_surface);
+        SDL_FreeSurface(loaded_surface);
+
+        /* vita's SDL2 renderer backend does not infer blend mode from the
+           source surface's alpha channel like desktop SDL2 does - textures
+           default to SDL_BLENDMODE_NONE, so alpha is ignored and glyphs/
+           sprites render with an opaque background box. Force it. */
+        SDL_SetTextureBlendMode(*place_to_load, SDL_BLENDMODE_BLEND);
+    }
+    else
+    {
+        print_sdl_image_error();
+        *success = false;
+    }
+}
+
+read_file_result read_file(const char* path)
+{
+    read_file_result result = {0};
+
+    char full_path[512];
+    vita_resolve_path(full_path, sizeof(full_path), path);
+
+    SDL_RWops* file = SDL_RWFromFile(full_path, "r");
+    if (file)
+    {
+        int64_t file_size = SDL_RWsize(file);
+        if (file_size > 0 // was `!= -1`, only caught SDL's own sentinel, not any other negative return
+            && file_size < 1024 * 1024 * 5) // safeguard
+        {
+            result.size = file_size;
+            result.contents = calloc(file_size + 1, sizeof(byte));
+
+            if (result.contents != 0)
+            {
+                for (int byte_index = 0;
+                    byte_index < file_size;
+                    ++byte_index)
+                {
+                    SDL_RWread(file, (void*)((char*)result.contents + byte_index), sizeof(char), 1);
+                }
+                *((char*)result.contents + file_size) = 0;
+            }
+        }
+        else
+        {
+            print_sdl_error();
+        }
+
+        SDL_RWclose(file);
+    }
+
+    return result;
+}
+
+void save_file(const char* path, write_to_file contents)
+{
+    char full_path[512];
+    vita_resolve_path(full_path, sizeof(full_path), path);
+
+    SDL_RWops* file = SDL_RWFromFile(full_path, "w+b");
+    if (file != NULL)
+    {
+        int bytes_written = SDL_RWwrite(file, contents.buffer, sizeof(char), contents.length);
+        if (bytes_written < contents.length)
+        {
+            print_sdl_error();
+        }
+
+        SDL_RWclose(file);
+    }
+}
+
+void store_preferences_file_path(sdl_data* sdl, memory_arena* permanent_arena)
+{
+    sceIoMkdir(VITA_SAVE_DIR, 0777);
+
+    empty_string_builder(&sdl->path_buffer);
+    push_c_string_to_builder(&sdl->path_buffer, VITA_SAVE_DIR "/completed_levels.txt");
+    safe_push_null_terminator_to_builder(&sdl->path_buffer);
+    string_ref path = get_string_from_string_builder(&sdl->path_buffer);
+    sdl->preferences_file_path = copy_string(permanent_arena, path);
+}
+
+read_file_result load_prefs(void)
+{
+    read_file_result result = {0};
+    if (GLOBAL_SDL_DATA.preferences_file_path.ptr != NULL)
+    {
+        result = read_file(GLOBAL_SDL_DATA.preferences_file_path.ptr);
+    }
+    return result;
+}
+
+void save_prefs(write_to_file contents)
+{
+    if (GLOBAL_SDL_DATA.preferences_file_path.ptr != NULL)
+    {
+        save_file(GLOBAL_SDL_DATA.preferences_file_path.ptr, contents);
+    }
+}
