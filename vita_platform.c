@@ -301,3 +301,304 @@ void save_prefs(write_to_file contents)
         save_file(GLOBAL_SDL_DATA.preferences_file_path.ptr, contents);
     }
 }
+
+void start_playing_music(string_ref audio_file_name)
+{
+    sdl_data* sdl = &GLOBAL_SDL_DATA;
+    if (sdl->audio_available && audio_file_name.string_size > 0)
+    {
+        if (sdl->music != NULL)
+        {
+            Mix_HaltMusic();
+            Mix_FreeMusic(sdl->music);
+            sdl->music = NULL;
+        }
+
+        empty_string_builder(&sdl->path_buffer);
+        push_c_string_to_builder(&sdl->path_buffer, "audio/");
+        push_string_to_builder(&sdl->path_buffer, audio_file_name);
+        if (false == (ends_with(audio_file_name, ".ogg")
+            || ends_with(audio_file_name, ".mp3")
+            || ends_with(audio_file_name, ".wav")))
+        {
+            push_c_string_to_builder(&sdl->path_buffer, ".ogg");
+        }
+        safe_push_null_terminator_to_builder(&sdl->path_buffer);
+
+        char full_path[512];
+        vita_resolve_path(full_path, sizeof(full_path), sdl->path_buffer.ptr);
+
+        sdl->music = Mix_LoadMUS(full_path);
+        if (sdl->music == NULL)
+        {
+            print_sdl_mixer_error();
+        }
+        else
+        {
+            Mix_FadeInMusic(GLOBAL_SDL_DATA.music, -1, 4000); // -1 means loop infinitely
+        }
+    }
+}
+
+void stop_playing_music(int fade_out_ms)
+{
+    if (GLOBAL_SDL_DATA.audio_available && Mix_PlayingMusic() != 0)
+    {
+        Mix_FadeOutMusic(fade_out_ms);
+    }
+}
+
+sdl_data init_sdl(void)
+{
+    sdl_data sdl_game = {0};
+    b32 success = true;
+
+    int init = SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER);
+    if (init == 0) // success
+    {
+        SDL_ShowCursor(SDL_DISABLE);
+
+        if (SDL_NumJoysticks() > 0)
+        {
+            sdl_game.pad = SDL_GameControllerOpen(0);
+        }
+
+        sdl_game.window = SDL_CreateWindow("Trifle Psychotic",
+            SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+            VITA_SCREEN_WIDTH, VITA_SCREEN_HEIGHT, SDL_WINDOW_SHOWN);
+
+        if (sdl_game.window)
+        {
+            sdl_game.renderer = SDL_CreateRenderer(sdl_game.window, -1, SDL_RENDERER_ACCELERATED);
+            if (sdl_game.renderer)
+            {
+                /* keep the original 320x240 logical resolution, sdl letterboxes
+                   it into the 960x544 vita screen automatically */
+                SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
+                SDL_RenderSetLogicalSize(sdl_game.renderer,
+                    SCREEN_WIDTH / SCALING_FACTOR,
+                    SCREEN_HEIGHT / SCALING_FACTOR);
+
+                SDL_GetRendererOutputSize(sdl_game.renderer,
+                    &sdl_game.screen_width, &sdl_game.screen_height);
+
+                SDL_SetRenderDrawColor(sdl_game.renderer, 0xFF, 0xFF, 0xFF, 0xFF);
+
+                int img_flags = IMG_INIT_PNG;
+                if (IMG_Init(img_flags) & img_flags)
+                {
+                    load_image(sdl_game.renderer, &sdl_game.tileset_texture, "gfx/tileset.png", &success);
+                    load_image(sdl_game.renderer, &sdl_game.ui_font_texture, "gfx/ui_font.png", &success);
+                    load_image(sdl_game.renderer, &sdl_game.title_font_texture, "gfx/title_font.png", &success);
+                    load_image(sdl_game.renderer, &sdl_game.charset_texture, "gfx/charset.png", &success);
+                    load_image(sdl_game.renderer, &sdl_game.explosion_texture, "gfx/explosions.png", &success);
+                    load_image(sdl_game.renderer, &sdl_game.background_desert_texture, "gfx/background_desert.png", &success);
+                    load_image(sdl_game.renderer, &sdl_game.background_ice_desert_texture, "gfx/background_ice_desert.png", &success);
+                    load_image(sdl_game.renderer, &sdl_game.background_clouds_texture, "gfx/background_clouds.png", &success);
+                    load_image(sdl_game.renderer, &sdl_game.background_red_planet_sky_texture, "gfx/background_red_planet_sky.png", &success);
+                    load_image(sdl_game.renderer, &sdl_game.background_red_planet_desert_texture, "gfx/background_red_planet_desert.png", &success);
+                    load_image(sdl_game.renderer, &sdl_game.background_planet_orbit_texture, "gfx/background_planet_orbit.png", &success);
+                    load_image(sdl_game.renderer, &sdl_game.background_title_screen_texture, "gfx/background_title_screen.png", &success);
+                }
+                else
+                {
+                    print_sdl_image_error();
+                    success = false;
+                }
+
+                /* audio is optional: a device open failure or missing codec
+                   must never take down the whole boot. flags matches the
+                   codec libs linked in CMakeLists (vorbis/ogg, opus, mod).
+                   Mix_Init failing here is also non-fatal, some of those
+                   codecs may not be needed and vitasdk's static build
+                   tolerates a partial mask. */
+                int wanted_mix_flags = MIX_INIT_OGG | MIX_INIT_OPUS | MIX_INIT_MOD;
+                int got_mix_flags = Mix_Init(wanted_mix_flags);
+                if ((got_mix_flags & wanted_mix_flags) != wanted_mix_flags)
+                {
+                    print_sdl_mixer_error();
+                }
+
+                if (Mix_OpenAudio(44100, MIX_DEFAULT_FORMAT, 2, 2048) < 0)
+                {
+                    print_sdl_mixer_error();
+                    sdl_game.audio_available = false;
+                }
+                else
+                {
+                    sdl_game.audio_available = true;
+                }
+            }
+            else
+            {
+                print_sdl_error();
+                success = false;
+            }
+        }
+        else
+        {
+            print_sdl_error();
+            success = false;
+        }
+    }
+    else
+    {
+        print_sdl_error();
+        success = false;
+    }
+
+    /* start the aim cursor centered, facing right, same as pc mouse default.
+       mouse_x/mouse_y are consumed by player.c/ui.c as coordinates in the
+       SCREEN_WIDTH x SCREEN_HEIGHT (640x480) space the pc build's window
+       and SDL_GetMouseState use - NOT the vita's physical 960x544 panel -
+       so aim_x/aim_y must live in that same 640x480 space, not VITA_SCREEN_*. */
+    sdl_game.aim_x = (r32)(SCREEN_WIDTH / 2 + 60);
+    sdl_game.aim_y = (r32)(SCREEN_HEIGHT / 2);
+
+    if (success)
+    {
+        sdl_game.initialized = true;
+        return sdl_game;
+    }
+    else
+    {
+        return (sdl_data){0};
+    }
+}
+
+static r32 apply_deadzone(Sint16 axis_value)
+{
+    i32 magnitude = (axis_value < 0) ? -(i32)axis_value : (i32)axis_value;
+
+    if (magnitude < STICK_DEADZONE)
+    {
+        return 0.0f;
+    }
+
+    /* rescale the post-deadzone range to 0..1 instead of jumping straight
+       from 0.0 to (DEADZONE/32767) - the old hard cutoff produced a step
+       discontinuity that felt like a digital switch instead of an analog
+       ramp, and fed straight into the cursor's absolute positioning below. */
+    r32 normalized = (r32)(magnitude - STICK_DEADZONE) / (r32)(32767 - STICK_DEADZONE);
+    if (normalized > 1.0f)
+    {
+        normalized = 1.0f;
+    }
+
+    return (axis_value < 0) ? -normalized : normalized;
+}
+
+game_input get_input_from_sdl_events(void)
+{
+    game_input new_input = {0};
+    sdl_data* sdl = &GLOBAL_SDL_DATA;
+
+    SDL_Event e = {0};
+    while (SDL_PollEvent(&e) != 0)
+    {
+        if (e.type == SDL_QUIT)
+        {
+            new_input.quit = true;
+        }
+    }
+
+    const Uint8* state = SDL_GetKeyboardState(NULL);
+    if (state[SDL_SCANCODE_UP])    new_input.up.number_of_presses++;
+    if (state[SDL_SCANCODE_DOWN])  new_input.down.number_of_presses++;
+    if (state[SDL_SCANCODE_LEFT])  new_input.left.number_of_presses++;
+    if (state[SDL_SCANCODE_RIGHT]) new_input.right.number_of_presses++;
+
+    if (sdl->pad)
+    {
+        r32 lx = apply_deadzone(SDL_GameControllerGetAxis(sdl->pad, SDL_CONTROLLER_AXIS_LEFTX));
+        r32 ly = apply_deadzone(SDL_GameControllerGetAxis(sdl->pad, SDL_CONTROLLER_AXIS_LEFTY));
+
+        if (SDL_GameControllerGetButton(sdl->pad, SDL_CONTROLLER_BUTTON_DPAD_UP) || ly < -0.4f)
+            new_input.up.number_of_presses++;
+        if (SDL_GameControllerGetButton(sdl->pad, SDL_CONTROLLER_BUTTON_DPAD_DOWN) || ly > 0.4f)
+            new_input.down.number_of_presses++;
+        if (SDL_GameControllerGetButton(sdl->pad, SDL_CONTROLLER_BUTTON_DPAD_LEFT) || lx < -0.4f)
+            new_input.left.number_of_presses++;
+        if (SDL_GameControllerGetButton(sdl->pad, SDL_CONTROLLER_BUTTON_DPAD_RIGHT) || lx > 0.4f)
+            new_input.right.number_of_presses++;
+
+        if (SDL_GameControllerGetButton(sdl->pad, SDL_CONTROLLER_BUTTON_START))
+            new_input.escape.number_of_presses++;
+
+        if (SDL_GameControllerGetButton(sdl->pad, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)
+            || SDL_GameControllerGetButton(sdl->pad, SDL_CONTROLLER_BUTTON_A))
+        {
+            new_input.is_fire_button_held = true;
+        }
+
+        /* right stick moves a virtual cursor. previously this snapped aim_x/
+           aim_y to an absolute point on a 200px circle around screen center
+           every frame - any stick deflection change (even small ones, e.g.
+           crossing the deadzone) caused the cursor to jump straight to the
+           new point instead of gliding, which read as teleportation. drive
+           it as velocity integrated onto the current position instead. */
+        r32 rx = apply_deadzone(SDL_GameControllerGetAxis(sdl->pad, SDL_CONTROLLER_AXIS_RIGHTX));
+        r32 ry = apply_deadzone(SDL_GameControllerGetAxis(sdl->pad, SDL_CONTROLLER_AXIS_RIGHTY));
+        if (rx != 0.0f || ry != 0.0f)
+        {
+            r32 cursor_speed = 10.0f; /* pixels per frame at full deflection */
+            sdl->aim_x += rx * cursor_speed;
+            sdl->aim_y += ry * cursor_speed;
+
+            /* clamp to the logical SCREEN_WIDTH x SCREEN_HEIGHT (640x480)
+               space mouse_x/mouse_y are read in, not the vita's physical
+               960x544 panel - clamping to the latter let the cursor drift
+               well outside the actual game/UI coordinate range. */
+            if (sdl->aim_x < 0.0f) sdl->aim_x = 0.0f;
+            if (sdl->aim_x > (r32)SCREEN_WIDTH) sdl->aim_x = (r32)SCREEN_WIDTH;
+            if (sdl->aim_y < 0.0f) sdl->aim_y = 0.0f;
+            if (sdl->aim_y > (r32)SCREEN_HEIGHT) sdl->aim_y = (r32)SCREEN_HEIGHT;
+        }
+    }
+
+    new_input.mouse_x = (i32)sdl->aim_x;
+    new_input.mouse_y = (i32)sdl->aim_y;
+
+    return new_input;
+}
+
+game_state* initialize_game_state(memory_arena* permanent_arena, memory_arena* transient_arena)
+{
+    game_state* game = push_struct(permanent_arena, game_state);
+    if (game == NULL)
+    {
+        sceKernelExitProcess(0);
+    }
+
+    game->arena = permanent_arena;
+    game->transient_arena = transient_arena;
+
+    game->platform.read_file = &read_file;
+    game->platform.save_file = &save_file;
+    game->platform.load_prefs = &load_prefs;
+    game->platform.save_prefs = &save_prefs;
+    game->platform.start_playing_music = &start_playing_music;
+    game->platform.stop_playing_music = &stop_playing_music;
+    game->platform.render_list_to_output = &render_list_to_output;
+
+    game->static_data = push_struct(permanent_arena, static_game_data);
+    if (game->static_data == NULL)
+    {
+        sceKernelExitProcess(0);
+    }
+    load_static_game_data(&game->platform, game->static_data, permanent_arena, transient_arena);
+
+    game->render.max_push_buffer_size = megabytes_to_bytes(1);
+    game->render.push_buffer_base = (u8*)push_size(permanent_arena, game->render.max_push_buffer_size);
+
+    game->level_state = push_struct(permanent_arena, level_state);
+    game->level_name_buffer = (char*)push_size(permanent_arena, MAX_LEVEL_NAME_LENGTH);
+
+    initialize_memory_for_checkpoint(game, permanent_arena);
+
+    game->input_buffer = initialize_input_buffer(permanent_arena);
+
+    game->current_scene = SCENE_MAIN_MENU;
+
+    return game;
+}
