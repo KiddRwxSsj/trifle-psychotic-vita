@@ -602,3 +602,164 @@ game_state* initialize_game_state(memory_arena* permanent_arena, memory_arena* t
 
     return game;
 }
+
+int main(int args_count, char* args[])
+{
+    scePowerSetArmClockFrequency(444);
+    scePowerSetBusClockFrequency(222);
+    scePowerSetGpuClockFrequency(222);
+    scePowerSetGpuXbarClockFrequency(166);
+
+    /* carve the arenas out first, before SDL/IMG/Mix ever run - a pristine
+       heap has no fragmentation to fail a 48MB contiguous request against,
+       and a dedicated memblock means SDL's own allocations afterward can
+       never eat into or fragment this pool either way. */
+    u32 memory_for_permanent_arena_size = megabytes_to_bytes(48);
+    SceUID permanent_arena_memblock;
+    void* memory_for_permanent_arena = allocate_vita_mem_block(
+        "trifle_permanent_arena", memory_for_permanent_arena_size, &permanent_arena_memblock);
+    if (memory_for_permanent_arena == NULL)
+    {
+        sceKernelExitProcess(0);
+    }
+    memory_arena* permanent_arena = initialize_memory_arena(memory_for_permanent_arena_size, (byte*)memory_for_permanent_arena);
+    if (permanent_arena == NULL)
+    {
+        sceKernelFreeMemBlock(permanent_arena_memblock);
+        sceKernelExitProcess(0);
+    }
+
+    u32 memory_for_transient_arena_size = megabytes_to_bytes(16);
+    SceUID transient_arena_memblock;
+    void* memory_for_transient_arena = allocate_vita_mem_block(
+        "trifle_transient_arena", memory_for_transient_arena_size, &transient_arena_memblock);
+    if (memory_for_transient_arena == NULL)
+    {
+        sceKernelFreeMemBlock(permanent_arena_memblock);
+        sceKernelExitProcess(0);
+    }
+    memory_arena* transient_arena = initialize_memory_arena(memory_for_transient_arena_size, (byte*)memory_for_transient_arena);
+    if (transient_arena == NULL)
+    {
+        sceKernelFreeMemBlock(permanent_arena_memblock);
+        sceKernelFreeMemBlock(transient_arena_memblock);
+        sceKernelExitProcess(0);
+    }
+
+    GLOBAL_SDL_DATA = init_sdl();
+    sdl_data* sdl = &GLOBAL_SDL_DATA;
+    sdl->permanent_arena_memblock = permanent_arena_memblock;
+    sdl->transient_arena_memblock = transient_arena_memblock;
+    if (sdl->initialized)
+    {
+        bool run = true;
+
+        game_state* game = initialize_game_state(permanent_arena, transient_arena);
+
+        int max_path_length = 512;
+        sdl->path_buffer = get_string_builder(game->transient_arena, max_path_length);
+        store_preferences_file_path(sdl, game->arena);
+
+        game->show_exit_game_option = false;
+
+        r32 target_elapsed_ms = 1000 / TARGET_HZ;
+        r32 elapsed_work_ms = 0;
+        r64 delta_time = 1 / TARGET_HZ;
+
+        while (run)
+        {
+            u32 start_work_counter = SDL_GetPerformanceCounter();
+
+            {
+                game_input new_input = get_input_from_sdl_events();
+
+                if (new_input.quit)
+                {
+                    run = false;
+                }
+
+                write_to_input_buffer(&game->input_buffer, &new_input);
+
+                main_game_loop(game, delta_time);
+
+                if (game->exit_game)
+                {
+                    run = false;
+                }
+            }
+
+            u32 end_work_counter = SDL_GetPerformanceCounter();
+
+            elapsed_work_ms = get_elapsed_miliseconds(start_work_counter, end_work_counter);
+            if (elapsed_work_ms < target_elapsed_ms)
+            {
+                r32 how_long_to_sleep_ms = target_elapsed_ms - elapsed_work_ms;
+                if (how_long_to_sleep_ms > 1)
+                {
+                    SDL_Delay((Uint32)how_long_to_sleep_ms);
+                }
+
+                r32 total_elapsed_ms = get_elapsed_miliseconds(start_work_counter, SDL_GetPerformanceCounter());
+                while (target_elapsed_ms > total_elapsed_ms)
+                {
+                    total_elapsed_ms = get_elapsed_miliseconds(start_work_counter, SDL_GetPerformanceCounter());
+                }
+            }
+        }
+
+        if (game->game_level_memory.arena)
+        {
+            end_temporary_memory(game->game_level_memory, false);
+        }
+
+        check_arena(game->arena);
+        check_arena(game->transient_arena);
+    }
+    else
+    {
+        invalid_code_path;
+    }
+
+    SDL_DestroyTexture(sdl->background_clouds_texture);
+    SDL_DestroyTexture(sdl->background_desert_texture);
+    SDL_DestroyTexture(sdl->background_ice_desert_texture);
+    SDL_DestroyTexture(sdl->background_planet_orbit_texture);
+    SDL_DestroyTexture(sdl->background_red_planet_desert_texture);
+    SDL_DestroyTexture(sdl->background_red_planet_sky_texture);
+    SDL_DestroyTexture(sdl->background_title_screen_texture);
+    SDL_DestroyTexture(sdl->tileset_texture);
+    SDL_DestroyTexture(sdl->charset_texture);
+    SDL_DestroyTexture(sdl->ui_font_texture);
+    SDL_DestroyTexture(sdl->title_font_texture);
+    SDL_DestroyTexture(sdl->explosion_texture);
+
+    if (sdl->audio_available)
+    {
+        Mix_HaltMusic();
+        Mix_FreeMusic(sdl->music);
+    }
+
+    if (sdl->pad)
+    {
+        SDL_GameControllerClose(sdl->pad);
+    }
+
+    SDL_DestroyRenderer(sdl->renderer);
+    SDL_DestroyWindow(sdl->window);
+
+    Mix_Quit();
+    IMG_Quit();
+    SDL_Quit();
+
+    if (sdl->transient_arena_memblock >= 0)
+    {
+        sceKernelFreeMemBlock(sdl->transient_arena_memblock);
+    }
+    if (sdl->permanent_arena_memblock >= 0)
+    {
+        sceKernelFreeMemBlock(sdl->permanent_arena_memblock);
+    }
+
+    sceKernelExitProcess(0);
+    return 0;
+}
