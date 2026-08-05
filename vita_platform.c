@@ -763,3 +763,291 @@ int main(int args_count, char* args[])
     sceKernelExitProcess(0);
     return 0;
 }
+
+void render_rect(sdl_data* sdl, rect rectangle)
+{
+    rectangle.min_corner.x = round(rectangle.min_corner.x);
+    rectangle.min_corner.y = round(rectangle.min_corner.y);
+    rectangle.max_corner.x = round(rectangle.max_corner.x);
+    rectangle.max_corner.y = round(rectangle.max_corner.y);
+
+    SDL_RenderDrawLine(sdl->renderer,
+        rectangle.min_corner.x, rectangle.min_corner.y, rectangle.max_corner.x, rectangle.min_corner.y);
+    SDL_RenderDrawLine(sdl->renderer,
+        rectangle.min_corner.x, rectangle.min_corner.y, rectangle.min_corner.x, rectangle.max_corner.y);
+    SDL_RenderDrawLine(sdl->renderer,
+        rectangle.max_corner.x, rectangle.min_corner.y, rectangle.max_corner.x, rectangle.max_corner.y);
+    SDL_RenderDrawLine(sdl->renderer,
+        rectangle.min_corner.x, rectangle.max_corner.y, rectangle.max_corner.x, rectangle.max_corner.y);
+}
+
+internal SDL_Texture* get_texture(sdl_data sdl, textures type)
+{
+    SDL_Texture* result = NULL;
+    switch (type)
+    {
+        case TEXTURE_NONE: { result = NULL; }; break;
+        case TEXTURE_TILESET: { result = sdl.tileset_texture; }; break;
+        case TEXTURE_FONT: { result = sdl.ui_font_texture; }; break;
+        case TEXTURE_TITLE_FONT: { result = sdl.title_font_texture; }; break;
+        case TEXTURE_CHARSET: { result = sdl.charset_texture; }; break;
+        case TEXTURE_EXPLOSION: { result = sdl.explosion_texture; }; break;
+        case TEXTURE_BACKGROUND_DESERT: { result = sdl.background_desert_texture; }; break;
+        case TEXTURE_BACKGROUND_ICE_DESERT: { result = sdl.background_ice_desert_texture; }; break;
+        case TEXTURE_BACKGROUND_CLOUDS: { result = sdl.background_clouds_texture; }; break;
+        case TEXTURE_BACKGROUND_RED_PLANET_SKY: { result = sdl.background_red_planet_sky_texture; }; break;
+        case TEXTURE_BACKGROUND_RED_PLANET_DESERT: { result = sdl.background_red_planet_desert_texture; }; break;
+        case TEXTURE_BACKGROUND_PLANET_ORBIT: { result = sdl.background_planet_orbit_texture; }; break;
+        case TEXTURE_BACKGROUND_TITLE_SCREEN: { result = sdl.background_title_screen_texture; }; break;
+        invalid_default_case;
+    }
+    return result;
+}
+
+/* paints solid black over the physical screen area outside the 4:3 game
+   content rect - the true fix for the vita gxm pillarbox bug (see bottom
+   of render_list_to_output for why SDL_RenderClear can't be trusted for
+   this). Must run with logical-size scaling OFF: while logical size is
+   active, SDL maps/clips every draw call into the logical content rect,
+   so the border area outside it is structurally unreachable through the
+   normal draw path no matter what viewport is requested - this is why
+   the previous "reset viewport then SDL_RenderClear" approach still left
+   garbage on real hardware. Runs every frame (not just on resize) because
+   the vita swaps between multiple physical framebuffers, and only the
+   buffer actually presented this call gets repainted. */
+internal void paint_pillarbox_borders(SDL_Renderer* renderer)
+{
+    SDL_RenderSetLogicalSize(renderer, 0, 0);
+    SDL_RenderSetViewport(renderer, NULL);
+
+    int output_w = 0;
+    int output_h = 0;
+    SDL_GetRendererOutputSize(renderer, &output_w, &output_h);
+
+    r32 logical_w = (r32)(SCREEN_WIDTH / SCALING_FACTOR);
+    r32 logical_h = (r32)(SCREEN_HEIGHT / SCALING_FACTOR);
+    r32 scale_x = (r32)output_w / logical_w;
+    r32 scale_y = (r32)output_h / logical_h;
+    r32 scale = (scale_x < scale_y) ? scale_x : scale_y;
+
+    int content_w = (int)round(logical_w * scale);
+    int content_h = (int)round(logical_h * scale);
+    int content_x = (output_w - content_w) / 2;
+    int content_y = (output_h - content_h) / 2;
+
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+
+    if (content_x > 0)
+    {
+        SDL_Rect left_bar = { 0, 0, content_x, output_h };
+        SDL_Rect right_bar = { content_x + content_w, 0, output_w - (content_x + content_w), output_h };
+        SDL_RenderFillRect(renderer, &left_bar);
+        SDL_RenderFillRect(renderer, &right_bar);
+    }
+
+    if (content_y > 0)
+    {
+        SDL_Rect top_bar = { 0, 0, output_w, content_y };
+        SDL_Rect bottom_bar = { 0, content_y + content_h, output_w, output_h - (content_y + content_h) };
+        SDL_RenderFillRect(renderer, &top_bar);
+        SDL_RenderFillRect(renderer, &bottom_bar);
+    }
+
+    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 0);
+
+    /* restore logical size so the next frame's game-space draws (and the
+       RENDER_LIST_ENTRY_CLEAR case below, which clears the game content
+       rect itself each frame and is unaffected by this bug) map correctly */
+    SDL_RenderSetLogicalSize(renderer,
+        SCREEN_WIDTH / SCALING_FACTOR, SCREEN_HEIGHT / SCALING_FACTOR);
+}
+
+void render_list_to_output(render_list* render)
+{
+    /* clear the logical 4:3 game-content area to black before any draws.
+       scenes with a full-screen backdrop (levels) paint over every pixel
+       anyway, but menu/UI scenes (main menu, level select) don't always
+       push their own RENDER_LIST_ENTRY_CLEAR, and anything drawn without a
+       fresh full backdrop underneath first - like the aim cursor - leaves
+       a trail of its previous frame's position. This clear runs with
+       logical size still ON (untouched), so it's scoped to just the
+       logical viewport - that is the well-behaved case for SDL_RenderClear
+       on vita's gxm backend; only clearing OUTSIDE the logical viewport is
+       buggy there, which is why the physical border is handled separately
+       by paint_pillarbox_borders() at the end of the frame instead. */
+    SDL_SetRenderDrawColor(GLOBAL_SDL_DATA.renderer, 0, 0, 0, 255);
+    SDL_RenderClear(GLOBAL_SDL_DATA.renderer);
+
+    SDL_SetRenderDrawColor(GLOBAL_SDL_DATA.renderer, 255, 255, 255, 0);
+
+    assert(GLOBAL_SDL_DATA.initialized);
+    for (u32 base_address = 0;
+        base_address < render->push_buffer_size;
+        )
+    {
+        render_list_entry_header* header = (render_list_entry_header*)(render->push_buffer_base + base_address);
+
+        // must match push_render_element()'s aligned header_size exactly, or
+        // reader and writer strides desync
+        u32 header_size = (sizeof(render_list_entry_header) + 3) & ~3u;
+        void* data = (u8*)header + header_size;
+        base_address += header_size;
+
+        switch (header->type)
+        {
+            case RENDER_LIST_ENTRY_BITMAP:
+            {
+                render_list_entry_bitmap* entry = (render_list_entry_bitmap*)data;
+
+                SDL_Texture* texture = get_texture(GLOBAL_SDL_DATA, entry->texture);
+                SDL_Rect src = get_sdl_rect(entry->source_rect);
+                SDL_Rect dst = get_sdl_rect(entry->destination_rect);
+
+                /* vita's SDL2 renderer doesn't reliably keep a texture's
+                   blend mode sticky across the frame - other entries in
+                   this same push buffer (e.g. BITMAP_WITH_EFFECTS additive
+                   glyphs) call SDL_SetTextureBlendMode on other textures,
+                   and on vita's backend that appears to affect later draws
+                   of THIS texture too, leaving glyph textures opaque
+                   (SDL_BLENDMODE_NONE) by the time text is drawn. Force it
+                   immediately before every plain-bitmap draw. */
+                SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+                SDL_RenderCopy(GLOBAL_SDL_DATA.renderer, texture, &src, &dst);
+
+                base_address += (sizeof(render_list_entry_bitmap) + 3) & ~3u;
+            }
+            break;
+            case RENDER_LIST_ENTRY_BITMAP_WITH_EFFECTS:
+            {
+                render_list_entry_bitmap_with_effects* entry = (render_list_entry_bitmap_with_effects*)data;
+
+                SDL_Texture* texture = get_texture(GLOBAL_SDL_DATA, entry->texture);
+                SDL_Rect src = get_sdl_rect(entry->source_rect);
+                SDL_Rect dst = get_sdl_rect(entry->destination_rect);
+                v4 sdl_tint = multiply_v4(entry->tint_color, 255.0f);
+
+                /* same vita blend-state stickiness issue as the plain
+                   BITMAP case above - force BLEND as the default here too;
+                   the additive branch below overrides it to ADD and
+                   restores BLEND afterward as it already did. */
+                SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+
+                if (entry->flip_horizontally)
+                {
+                    src = get_sdl_rect(move_rect(entry->source_rect, get_v2(0.0f, 240.0f)));
+                }
+
+                if (entry->render_in_additive_mode)
+                {
+                    SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_ADD);
+                    SDL_SetTextureColorMod(texture, sdl_tint.r, sdl_tint.g, sdl_tint.b);
+
+                    SDL_RenderCopyEx(GLOBAL_SDL_DATA.renderer, texture, &src, &dst, 0, NULL, SDL_FLIP_NONE);
+
+                    SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+                    SDL_SetTextureColorMod(texture, 255, 255, 255);
+                }
+                else
+                {
+                    if (false == is_zero_v4(entry->tint_color))
+                    {
+                        SDL_SetTextureColorMod(texture, sdl_tint.r, sdl_tint.g, sdl_tint.b);
+
+                        SDL_RenderCopyEx(GLOBAL_SDL_DATA.renderer, texture, &src, &dst, 0, NULL, SDL_FLIP_NONE);
+
+                        SDL_SetTextureColorMod(texture, 255, 255, 255);
+                    }
+                    else
+                    {
+                        SDL_RenderCopyEx(GLOBAL_SDL_DATA.renderer, texture, &src, &dst, 0, NULL, SDL_FLIP_NONE);
+                    }
+                }
+
+                base_address += (sizeof(render_list_entry_bitmap_with_effects) + 3) & ~3u;
+            }
+            break;
+            case RENDER_LIST_ENTRY_RECTANGLE:
+            {
+                render_list_entry_rectangle* entry = (render_list_entry_rectangle*)data;
+
+                if (false == is_zero_v4(entry->color))
+                {
+                    v4 sdl_tint = multiply_v4(entry->color, 255.0f);
+                    if (entry->color.a != 1.0f)
+                    {
+                        SDL_SetRenderDrawBlendMode(GLOBAL_SDL_DATA.renderer, SDL_BLENDMODE_BLEND);
+                    }
+                    SDL_SetRenderDrawColor(GLOBAL_SDL_DATA.renderer, sdl_tint.r, sdl_tint.g, sdl_tint.b, sdl_tint.a);
+                }
+
+                if (entry->render_outline_only)
+                {
+                    render_rect(&GLOBAL_SDL_DATA, entry->destination_rect);
+                }
+                else
+                {
+                    SDL_Rect dst = get_sdl_rect(entry->destination_rect);
+                    SDL_RenderFillRect(GLOBAL_SDL_DATA.renderer, &dst);
+                }
+
+                if (false == is_zero_v4(entry->color))
+                {
+                    SDL_SetRenderDrawColor(GLOBAL_SDL_DATA.renderer, 255, 255, 255, 0);
+                    SDL_SetRenderDrawBlendMode(GLOBAL_SDL_DATA.renderer, SDL_BLENDMODE_NONE);
+                }
+
+                base_address += (sizeof(render_list_entry_rectangle) + 3) & ~3u;
+            }
+            break;
+            case RENDER_LIST_ENTRY_CLEAR:
+            {
+                render_list_entry_clear* entry = (render_list_entry_clear*)data;
+
+                if (false == is_zero_v4(entry->color))
+                {
+                    v4 sdl_tint = multiply_v4(entry->color, 255.0f);
+                    SDL_SetRenderDrawColor(GLOBAL_SDL_DATA.renderer, sdl_tint.r, sdl_tint.g, sdl_tint.b, sdl_tint.a);
+                }
+
+                SDL_RenderClear(GLOBAL_SDL_DATA.renderer);
+
+                if (false == is_zero_v4(entry->color))
+                {
+                    SDL_SetRenderDrawColor(GLOBAL_SDL_DATA.renderer, 255, 255, 255, 0);
+                }
+
+                base_address += (sizeof(render_list_entry_clear) + 3) & ~3u;
+            }
+            break;
+            case RENDER_LIST_ENTRY_FADE:
+            {
+                render_list_entry_fade* entry = (render_list_entry_fade*)data;
+
+                v4 sdl_color = multiply_v4(entry->color, 255.0f);
+                sdl_color.a = entry->percentage * 255;
+
+                SDL_Rect fullscreen = { 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT };
+                SDL_SetRenderDrawBlendMode(GLOBAL_SDL_DATA.renderer, SDL_BLENDMODE_BLEND);
+                SDL_SetRenderDrawColor(GLOBAL_SDL_DATA.renderer, sdl_color.r, sdl_color.g, sdl_color.b, sdl_color.a);
+                SDL_RenderFillRect(GLOBAL_SDL_DATA.renderer, &fullscreen);
+                SDL_SetRenderDrawColor(GLOBAL_SDL_DATA.renderer, 255, 255, 255, 0);
+                SDL_SetRenderDrawBlendMode(GLOBAL_SDL_DATA.renderer, SDL_BLENDMODE_NONE);
+
+                base_address += (sizeof(render_list_entry_fade) + 3) & ~3u;
+            }
+            break;
+
+            invalid_default_case;
+        }
+    }
+
+    /* game content for this frame is fully drawn - now cover the physical
+       border area the logical-size game draws above can never reach.
+       must be last, right before present: bypasses SDL_RenderClear
+       entirely instead of trying to make it behave (see function above). */
+    paint_pillarbox_borders(GLOBAL_SDL_DATA.renderer);
+
+    SDL_RenderPresent(GLOBAL_SDL_DATA.renderer);
+
+    render->push_buffer_size = 0;
+}
