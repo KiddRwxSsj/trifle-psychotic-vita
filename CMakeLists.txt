@@ -63,3 +63,15 @@ target_link_libraries(${PROJECT_NAME}
   SceSysmodule_stub
   SceTouch_stub
 )
+
+vita_create_self(TriflePsychotic.self ${PROJECT_NAME} UNSAFE)
+
+vita_create_vpk(TriflePsychotic.vpk TRFL00001 TriflePsychotic.self
+  VERSION "01.00"
+  NAME "Trifle Psychotic"
+  FILE assets/gfx gfx
+  FILE assets/data data
+  FILE assets/audio audio
+  FILE assets/mapmaking mapmaking
+  FILE sce_sys sce_sys
+)
