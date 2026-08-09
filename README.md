@@ -37,6 +37,11 @@ The game's assets are under different licenses:
 * Levels' data (`.tmx` files in the `data` folder) is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported (CC BY-NC-SA 3.0), with attribution to Jan Orzechowski, 2022. 
 * Graphical and audio assets are under licenses chosen by their respective creators (check the `credits` files in the `audio` and `gfx` folders).
 
+## AI Assistance
+
+Parts of the code were written or improved with the assistance of AI. All AI-assisted code was thoroughly reviewed, tested, and validated manually, with the overall implementation and debugging process remaining under human supervision.
+
+
 ## Building from source (PS Vita)
 
 To compile the PS Vita port yourself, you will need the [VitaSDK](https://vitasdk.org/) properly installed and configured.
@@ -47,3 +52,4 @@ The project relies on standard Vita SDL2 libraries. Create a build directory and
 mkdir build && cd build
 cmake ..
 make -j$(nproc)
+
